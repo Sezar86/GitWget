@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       file_url:
-        description: 'URLs to download (space-separated for multiple files)'
+        description: 'URLs to download — separated by space or comma'
         required: true
         type: string
       mode:
-        description: 'Download mode: normal (keep individual files) or zip (pack all into one archive)'
+        description: 'normal = keep files as-is (auto-split if too large) | zip = pack everything into one archive'
         required: false
         type: choice
         default: normal
@@ -16,17 +16,22 @@ on:
           - normal
           - zip
       split_size:
-        description: 'Split size for large files (e.g. 90m, 95m)'
+        description: 'Max size per file in commit mode (e.g. 90m, 95m). Files above this are split into zip parts.'
         required: false
         type: string
         default: '90m'
+      zip_password:
+        description: 'Optional password to protect zip files (applies to both zip mode and auto-split parts). Leave empty for no password.'
+        required: false
+        type: string
+        default: ''
       connections:
         description: 'Parallel connections per URL for faster download (1 to 16, default 4)'
         required: false
         type: string
         default: '4'
       custom_filename:
-        description: 'Custom output filename (only works when downloading a single URL)'
+        description: 'Custom output filename — only works when downloading a single URL. Leave empty to use original name.'
         required: false
         type: string
         default: ''
@@ -49,6 +54,7 @@ jobs:
           FILE_URLS: ${{ github.event.inputs.file_url }}
           MODE: ${{ github.event.inputs.mode }}
           SPLIT_SIZE: ${{ github.event.inputs.split_size }}
+          ZIP_PASSWORD: ${{ github.event.inputs.zip_password }}
           CONNECTIONS: ${{ github.event.inputs.connections }}
           CUSTOM_FILENAME: ${{ github.event.inputs.custom_filename }}
         run: |
@@ -64,7 +70,8 @@ jobs:
 
           mkdir -p downloads tmp_downloads
 
-          URL_ARRAY=($FILE_URLS)
+          NORMALIZED_URLS=$(echo "$FILE_URLS" | tr ',' ' ' | tr -s ' ' | sed 's/^ //;s/ $//')
+          URL_ARRAY=($NORMALIZED_URLS)
           URL_COUNT=${#URL_ARRAY[@]}
           echo "Total URLs to download: $URL_COUNT"
 
@@ -125,7 +132,11 @@ jobs:
             ARCHIVE_NAME="archive_$(date +%Y%m%d_%H%M%S).zip"
             echo "Creating zip archive: $ARCHIVE_NAME"
             cd tmp_downloads
-            zip -j "../downloads/$ARCHIVE_NAME" ./*
+            if [ -n "$ZIP_PASSWORD" ]; then
+              zip -j -P "$ZIP_PASSWORD" "../downloads/$ARCHIVE_NAME" ./*
+            else
+              zip -j "../downloads/$ARCHIVE_NAME" ./*
+            fi
             cd ..
             echo "Archive ready: downloads/$ARCHIVE_NAME"
           else
@@ -145,7 +156,11 @@ jobs:
               if [ "$SIZE" -gt "$LIMIT_BYTES" ]; then
                 SIZE_MB=$(( SIZE / 1024 / 1024 ))
                 echo "File $BASENAME is ${SIZE_MB}MB, splitting into ${SPLIT_SIZE} parts..."
-                zip -s "$SPLIT_SIZE" "downloads/${BASENAME}.zip" -j "$FILE"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  zip -P "$ZIP_PASSWORD" -s "$SPLIT_SIZE" "downloads/${BASENAME}.zip" -j "$FILE"
+                else
+                  zip -s "$SPLIT_SIZE" "downloads/${BASENAME}.zip" -j "$FILE"
+                fi
                 echo "Split complete: $BASENAME"
               else
                 cp "$FILE" "downloads/$BASENAME"
